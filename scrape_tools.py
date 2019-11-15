@@ -1,10 +1,33 @@
+import os
 import re
-from contextlib import closing
+import json
 
-import pandas as pd
+from contextlib import closing
 from bs4 import BeautifulSoup
 from requests import get
 from requests.exceptions import RequestException
+
+import pandas as pd
+
+
+def read_json(jsonfile):
+    with open(jsonfile, 'r') as f:
+        json_dict = json.load(f)
+
+    return json_dict
+
+def write_json(dictionary, jsonfile):
+    with open(jsonfile, 'w') as f:
+        json.dump(dictionary, f, indent=2)
+
+def read_list(txtfile):
+    with open(txtfile, 'r') as f:
+        return f.read().splitlines()
+
+def write_list(arr, txtfile):
+    with open(txtfile, 'w') as f:
+        for item in arr:
+            f.write(item + '\n')
 
 
 def get_page(url, headers=None):
@@ -25,7 +48,6 @@ def get_page(url, headers=None):
     except RequestException as e:
         log_error('Error during request to {0} : {1}'.format(url, str(e)))
 
-
 def is_good_response(resp):
     """copied from:
     https://realpython.com/python-web-scraping-practical-introduction/
@@ -38,7 +60,6 @@ def is_good_response(resp):
             and content_type is not None
             and content_type.find('html') > -1)
 
-
 def log_error(e):
     """
     copied from:
@@ -48,130 +69,205 @@ def log_error(e):
     print(e)
 
 
-def scrape_rev(debate_url, tag_type="div", tag_class="uabb-infobox-text"):
-    """scrape the debate transcript from rev.com
-    
-    :param debate_url: url to the debate transcript
+def p_has_a_child_ts(tag):
+    """ Returns True if tag is <p> tag containing 2 or more 
+    elements and has <a> tag child that links to a timestamp.
+    """
+    try:
+        return (tag.name == 'p' 
+                and tag.a 
+                and tag.a['href'].find('ts=') > -1 
+                and len(tag.contents) > 1)
+    except AttributeError:
+        return False
+    except TypeError:
+        return False
+
+def scrape_rev(debate_url):
+    """scrape the debate transcript from rev.com and returns 
+    all tags based on above filter.
+
+    :param debate_url: url to debate transcript
     :type debate_url: str
-    :param tag_type: type of html tag, defaults to "div"
-    :type tag_type: str, optional
-    :param tag_class: class of html tag, defaults to "uabb-infobox-text"
-    :type tag_class: str, optional
     """
     raw_page = get_page(debate_url)
     debate_html = BeautifulSoup(raw_page, "html.parser")
-    results = debate_html.find_all(tag_type, class_=tag_class)
-    # the relevant information is at the 2nd spot in the list
-    return results[1]
+    transcipt = debate_html.find_all(p_has_a_child_ts)
+    return transcipt
 
 
-# TODO see if next debate will include timestamps, if so rewrite and get timestamps for night 2
-def rev_to_list(transcript, candidates, proctors, tags="p"):
-    """Return a list of all 'p' tags from rev page where the statement
-    contains 2 or 3 elements
-    
+def build_tr_list(transcript):
+    """ Creates clean list of statements by stripping spaces and 
+    extracting speaker, timestamp, and statement from list of tags.
+
     :param transcript: transcript from scrape_rev()
     :type transcript: soup
-    :param candidates: list of candidates
-    :type candidates: list
-    :param proctors: list of proctors or other speakers
-    :type proctors: list
-    :param tags: html tag where speaking is, defaults to "p"
-    :type tags: str, optional
     """
-    results = []
-    for tag in transcript.select(tags, text=True, recursive=False):
-        # this page has a bunch of \xa0 so replacing any string of 2 or more
-        statement = re.sub(u"\xa0" + '{2,}', "|", tag.text)
-        statement = statement.split("|")
-        statement_len = len(statement)
 
-        # maybe move part of this to another function?
-        # may need to change depending on debate 2 webpage
-        if statement_len > 1:
-            if any(speaker in statement[0] for speaker in candidates):
-                statement.append("candidate")
-                if statement_len == 2:
-                    statement.insert(1, "")
-                    results.append(statement)
-                elif statement_len == 3:
-                    results.append(statement)
-            elif any(speaker in statement[0] for speaker in proctors):
-                statement.append("proctor")
-                if statement_len == 2:
-                    statement.insert(1, "")
-                    results.append(statement)
-                elif statement_len == 3:
-                    results.append(statement)
+    tr_list = []
+    for i in range(len(transcript)):
+        stmt_list = list(transcript[i].descendants)
 
-    return results
+        speaker = stmt_list[0].split(':')[0].replace('\u2019', "'")
+        timestamp = transcript[i].find('a').text
+        statement = stmt_list[-1].replace('\xa0', "").lstrip()
 
 
-def read_name_list(name_dir):
-    """Read list of names
-    
-    :param name_dir: directory of name file
-    :type name_dir: str
+        stmt_row = [i, speaker, timestamp, statement]
+
+        tr_list.append(stmt_row)
+
+    return tr_list
+
+def tr_list_to_df(tr_list):
+    """ Converts clean list of transcript statements into DataFrame.
+
+    :param tr_list: transcipt from build_tr_list()
+    :type tr_list: list
     """
-    with open(name_dir) as name_file:
-        return name_file.read().splitlines()
+    headers = ["statement_no", "speaker", "timestamp", "statement"]
+    transcipt_df = pd.DataFrame(tr_list, columns=headers).set_index('statement_no')
+
+    return transcipt_df
 
 
-def list_to_df(rev_list):
-    """Convert results from rev_to_list() to dataframe with candidates
-    and statement column
-    
-    :param rev_list: list from rev_to_list()
-    :type rev_list: list
+def rename_speaker(transcript_df):
+    """ Replaces speaker with corresponding mapping from name_map.
+    Requires name_map.json from update_speakers_json().
+
+    :param transcript_df: DataFrame of transcipt from tr_list_to_df()
+    :type transcript_df: DataFrame
     """
-    headers = ["speaker", "timestamp", "statement", "speaker_type"]
-    return pd.DataFrame(rev_list, columns=headers)
+    name_dict = read_json("Input/name_map.json")
+
+    transcript_df["speaker"] = transcript_df["speaker"].map(name_dict)
+
+def get_speaker_type(speaker):
+    """ Determines type of speaker.
+    Requires candidates.txt and proctors.txt from get_names().
+
+    :param speaker: speaker of statement
+    :type speaker: str
+    """
+    candidate_list = read_list('Input/candidates.txt')
+    proctor_list = read_list('Input/proctors.txt')
+
+    if speaker in candidate_list:
+        return "candidate"
+    elif speaker in proctor_list:
+        return "proctor"
+    else:
+        return "other"
+
+def clean_df(transcript_df, debate_no, night_no):
+    """ Remaps speaker names and inserts columns for 
+    speaker type, debate number, and night number.
+
+    :param transcript_df: DataFrame of transcript 
+    :type transcript_df: DataFrame
+    :param debate_no: debate number
+    :type debate_no: int
+    :param night_no: night number of debate
+    :type night_no: int
+    """
+    rename_speaker(transcript_df)
+
+    speaker_type_series = transcript_df.speaker.apply(get_speaker_type)
+    transcript_df.insert(1, "speaker_type", speaker_type_series)
+
+    transcript_df.insert(0, "debate", debate_no)
+    transcript_df.insert(1, "night", night_no)
 
 
-# TODO create statement number column based on index
-def process_debate(debate_url, candidate_dir, proctor_dir, name_dict):
-    """Create dataframe of debate using above helper functions.
-    Process debate by stripping spaces, remapping names, and 
-    adding night and debate number columns.
-    
-    :param debate_url: url to debate
+def update_speakers_json(debate_url):
+    """ Scrapes transcript from rev.com and store all speakers as keys
+    for remapping. Values are empty string to be manually entered.
+
+    :param debate_url: url to debate transcript
     :type debate_url: str
-    :param candidate_dir: directory to candidate list
-    :type candidate_dir: str
-    :param proctor_dir: directory to proctor list
-    :type proctor_dir: str
-    :param name_dict: directionary for mapping
-    :type name_dict: dict
     """
-    night, debate = get_night_debate(candidate_dir)
-
-    candidates = read_name_list(candidate_dir)
-    proctors = read_name_list(proctor_dir)
+    name_dict = read_json("Input/name_map.json")
 
     transcript = scrape_rev(debate_url)
-    transcript_list = rev_to_list(transcript, candidates, proctors)
-    transcript_df = list_to_df(transcript_list)
 
-    transcript_df["statement"] = transcript_df["statement"].str.strip()
-    transcript_df["timestamp"] = transcript_df["timestamp"].str.strip()
-    transcript_df["speaker"] = transcript_df["speaker"].str.replace(":", "")
-    transcript_df["speaker"] = transcript_df["speaker"].str.replace(
-        u"\u2019", "'")
-    transcript_df["speaker"] = transcript_df["speaker"].map(name_dict)
-    transcript_df["night"] = night
-    transcript_df["debate"] = debate
+    for i in range(len(transcript)):
+        stmt_list = list(transcript[i].descendants)
+        speaker = stmt_list[0].split(':')[0].replace('\u2019', "'")
 
-    transcript_df.reset_index(inplace=True)
-    transcript_df.rename(columns={"index": "statement_number"}, inplace=True)
+        if speaker not in name_dict:
+            name_dict.update({speaker:""})
 
-    return transcript_df
+    write_json(name_dict, "Input/name_map.json")
 
-
-def get_night_debate(candidate_dir):
-    """Get debate and night numbers from candidate_dir string
-    
-    :param candidate_dir: directory to candidate list
-    :type candidate_dir: str
+def get_names():
+    """ Scrapes candidates and proctors from wikipedia and
+    writes them into txt files.
     """
-    dir_split = candidate_dir.split("_")
-    return dir_split[1], dir_split[3]
+    wiki = "https://en.wikipedia.org/wiki/2020_Democratic_Party_presidential_debates_and_forums"
+    wiki_data = pd.read_html(wiki)
+
+    # get list of candidates
+    forum_df = wiki_data[28]
+    candidates = forum_df.Candidate.Candidate.Candidate
+    cand_list = candidates.to_list()
+
+    # get list of proctors
+    sched_mod = wiki_data[2]["Moderator(s)"]
+    rx = re.compile(r'(?<=[a-z])(?=[A-Z])')
+
+    proc_list=[]
+    for sched in sched_mod:
+        pr_names = rx.sub(',', sched).split(',')
+
+        for name in pr_names:
+            proctor = name.split('[')[0]
+            if proctor != 'TBA': 
+                proc_list.append(proctor.split(' ')[1])
+
+    # remove duplicate proctors
+    proc_list = set(proc_list)
+
+    # save candidate and proctor lists
+    write_list(cand_list, "Input/candidates.txt")
+    write_list(proc_list, "Input/proctors.txt")
+
+
+def scrape_prep(debate_url):
+    """ Prepares necessary files before processing debate.
+
+    :param debate_url: url to debate transcript
+    :type debate_url: str
+    """
+    if not os.path.isdir("Output"):
+        os.makedirs("Output")
+    if not os.path.isdir("Input"):
+        os.makedirs("Input")
+
+    name_map_dir = "Input/name_map.json"
+    if not os.path.exists(name_map_dir):
+        with open(name_map_dir, 'w') as f:
+            json.dump({}, f, indent=2)
+
+    get_names()
+    update_speakers_json(debate_url)
+
+def process_debate(debate_url, debate, night):
+    """ Creates csv of debate transcript using above helper functions. 
+    Requires candidates.txt, proctors.txt, and name_map.json 
+    to be up to date before using.
+
+    :param debate_url: url to debate transcript
+    :type debate_url: str
+    :param debate: debate number
+    :type debate: int
+    :param night: night number of debate
+    :type night: int
+    """
+    transcript = scrape_rev(debate_url)
+    transcript_list = build_tr_list(transcript)
+    transcript_df = tr_list_to_df(transcript_list)
+
+    clean_df(transcript_df, debate, night)
+
+    outfilepath = f"Output/debate_{debate}_night_{night}.csv"
+    transcript_df.to_csv(outfilepath)
