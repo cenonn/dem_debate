@@ -1,37 +1,32 @@
-import json
-
-import pandas as pd
-
-import scrape_tools
-
+import scrape_tools as st
 
 def main():
-    debate_url_1 = "https://www.rev.com/blog/transcript-from-first-night-of-democratic-debates"
-    candidate_dir_1 = "inputs/debate_1_night_1_.txt"
+    d1n1_url = "https://www.rev.com/blog/transcript-from-first-night-of-democratic-debates"
+    d1n2_url = "https://www.rev.com/blog/transcript-from-night-2-of-the-2019-democratic-debates"
 
-    debate_url_2 = "https://www.rev.com/blog/transcript-from-night-2-of-the-2019-democratic-debates"
-    candidate_dir_2 = "inputs/debate_1_night_2_.txt"
+    d2n1_url = "https://www.rev.com/blog/transcript-of-july-democratic-debate-night-1-full-transcript-july-30-2019"
+    d2n2_url = "https://www.rev.com/blog/transcript-of-july-democratic-debate-2nd-round-night-2-full-transcript-july-31-2019"
 
-    proctor_dir = "inputs/debate_1_proctor.txt"
-    name_dir = "inputs/name_map.json"
-    output_name = "output/debate_1_combined.csv"
+    d3n1_url = "https://www.rev.com/blog/democratic-debate-transcript-houston-september-12-2019"
 
-    with open(name_dir, "r") as name_map:
-        name_dict = json.load(name_map)
-
-    night1_df = scrape_tools.process_debate(debate_url_1,
-                                            candidate_dir_1,
-                                            proctor_dir,
-                                            name_dict)
-    night2_df = scrape_tools.process_debate(debate_url_2,
-                                            candidate_dir_2,
-                                            proctor_dir,
-                                            name_dict)
-
-    transcript_df = pd.concat([night1_df, night2_df])
-
-    transcript_df.to_csv(output_name, index=False)
+    d4n1_url = "https://www.rev.com/blog/october-democratic-debate-transcript-4th-debate-from-ohio"
 
 
-if __name__ == '__main__':
+    # url_list = [d1n1_url, d1n2_url, d2n1_url, d2n2_url, d3n1_url, d4n1_url]
+    # for url in url_list:
+    #     st.scrape_prep(url)
+
+
+    st.process_debate(d1n1_url, 1, 1)
+    st.process_debate(d1n2_url, 1, 2)
+
+    st.process_debate(d2n1_url, 2, 1)
+    st.process_debate(d2n2_url, 2, 2)
+
+    st.process_debate(d3n1_url, 3, 1)
+
+    st.process_debate(d4n1_url, 4, 1)
+
+
+if __name__=='__main__':
     main()
